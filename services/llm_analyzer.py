@@ -37,10 +37,7 @@ class LLMAnalyzer:
             )
             logger.info("LLMAnalyzer: ChatGroq client initialized")
 
-    # -------------------------------------------------------------------------
     # Query variation generator
-    # -------------------------------------------------------------------------
-
     def generate_query_variations(self, user_query: str, n: int = 4) -> List[str]:
         logger.info(f"Generating up to {n} query variations for: {user_query}")
 
@@ -74,10 +71,7 @@ class LLMAnalyzer:
             logger.error(f"Query variation generation failed: {e}")
             return [user_query]
 
-    # -------------------------------------------------------------------------
     # Main analysis
-    # -------------------------------------------------------------------------
-
     def analyze_chunks(self, chunks: List[Dict[str, Any]], query: str) -> LLMAnalysisOutput:
         logger.info(f"Analyzing {len(chunks)} chunks for query: {query}")
 
@@ -96,10 +90,7 @@ class LLMAnalyzer:
             logger.error(f"Chunk analysis failed: {e}")
             return LLMAnalysisOutput(extracted_points=[], confidence=0.0)
 
-    # -------------------------------------------------------------------------
     # Refinement
-    # -------------------------------------------------------------------------
-
     def refine_extraction(self, initial_points: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
         logger.info(f"Refining {len(initial_points)} extracted points")
 
@@ -148,10 +139,7 @@ class LLMAnalyzer:
             logger.error(f"Refinement failed: {e}")
             return initial_points
 
-    # -------------------------------------------------------------------------
     # Internal helpers
-    # -------------------------------------------------------------------------
-
     def _build_context(self, chunks: List[Dict[str, Any]]) -> str:
         parts = []
         for ch in chunks:
@@ -161,7 +149,6 @@ class LLMAnalyzer:
             parts.append(f"[Page {page}]\n{text}")
         return "\n\n---\n\n".join(parts)
 
-    # -------------------------------------------------------------------------
 
     def _build_extraction_prompt(self, context: str, query: str) -> str:
         return f"""
@@ -201,7 +188,6 @@ class LLMAnalyzer:
                 {context}
                 """
 
-    # -------------------------------------------------------------------------
 
     def _parse_analysis_output(self, parsed: Dict[str, Any], chunks: List[Dict[str, Any]]) -> LLMAnalysisOutput:
         extracted_points = []
@@ -277,7 +263,6 @@ class LLMAnalyzer:
         confidence = max(0.0, min(1.0, confidence))
         return LLMAnalysisOutput(extracted_points=extracted_points, confidence=confidence)
 
-    # -------------------------------------------------------------------------
 
     def _find_chunk_for_quote(self, quote: str, chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not quote or len(quote.strip()) < 20:
@@ -300,3 +285,4 @@ class LLMAnalyzer:
                 best_match = ch
 
         return best_match if best_score >= 80 else None
+
