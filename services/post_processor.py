@@ -18,18 +18,7 @@ class PostProcessor:
         points: List[Dict[str, Any]],
         retrieval_scores: Optional[Dict[str, float]] = None
     ) -> List[FinalKeyPoint]:
-        """
-        Process raw extracted points and return top-ranked FinalKeyPoint objects.
 
-        Args:
-            points: list of point dicts (from LLM refinement). Expected keys include:
-                - summary, importance_score, stance, supporting_quote, legal_concepts,
-                  page_start, page_end, line_start, line_end, chunk_id (optional)
-            retrieval_scores: optional mapping chunk_id -> score (float)
-
-        Returns:
-            List[FinalKeyPoint] sorted by combined_score (descending)
-        """
         logger.info(f"PostProcessor: processing {len(points)} points (final_k={self.final_k})")
 
         if not points:
@@ -71,7 +60,6 @@ class PostProcessor:
     def _calculate_combined_score(self, point: Dict[str, Any]) -> Dict[str, Any]:
         """
         Compute combined score from importance_score and retrieval_score.
-        Default weights: importance 0.7, retrieval 0.3
         """
         importance = self._safe_float(point.get("importance_score"), default=0.5)
         retrieval = self._safe_float(point.get("retrieval_score"), default=0.0)
@@ -127,11 +115,6 @@ class PostProcessor:
         return unique
 
     def _select_balanced_top_k(self, points: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
-        """
-        Select a balanced set of points across stances: for (plaintiff/for), against (defendant/against), neutral.
-        Strategy:
-         - Aim for k//2 for/against split if available, remainder filled from best remaining by combined_score.
-        """
         if len(points) <= k:
             return points
 
@@ -241,3 +224,4 @@ class PostProcessor:
             return int(v)
         except Exception:
             return None
+
