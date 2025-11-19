@@ -5,12 +5,21 @@ import hashlib
 
 
 class PDFProcessor:
+    """Processes PDF files into structured text chunks"""
+
     def __init__(self, chunk_size: int = 1500, chunk_overlap: int = 200):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
     def process_pdf(self, pdf_path: str) -> Tuple[List[Dict], Dict, str]:
+        """
+        Main PDF extraction pipeline.
 
+        Returns:
+            chunks: list of structured chunk dicts
+            document_metadata: basic stats
+            document_id: unique identifier
+        """
         logger.info(f"Processing PDF: {pdf_path}")
 
         document_id = self._generate_doc_id(pdf_path)
@@ -138,4 +147,3 @@ class PDFProcessor:
     def _generate_doc_id(self, pdf_path: str) -> str:
         """Creates deterministic document ID using MD5 hash."""
         return hashlib.md5(pdf_path.encode()).hexdigest()[:12]
-
