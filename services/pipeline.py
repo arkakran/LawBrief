@@ -244,10 +244,7 @@ class AnalysisPipeline:
         logger.info(f"Analysis complete in {elapsed}s — found {len(key_points)} key points")
         return result
 
-    # -------------------------
     # Utilities
-    # -------------------------
-
     def _calculate_confidence(self, points: List[Any], retrieval_scores: List[float]) -> float:
         """
         Calculate overall confidence from importance scores and retrieval quality.
@@ -280,3 +277,4 @@ class AnalysisPipeline:
 
         confidence = (importance_avg * 0.6) + (retrieval_avg * 0.4)
         return round(max(0.0, min(1.0, confidence)), 2)
+
