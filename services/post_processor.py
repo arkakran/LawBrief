@@ -1,6 +1,5 @@
 from typing import List, Dict, Any, Optional
 from loguru import logger
-
 from rapidfuzz import fuzz
 
 from utils.models import FinalKeyPoint, Stance
@@ -13,215 +12,200 @@ class PostProcessor:
         self.final_k = int(final_k)
         self.dedup_threshold = float(dedup_threshold)
 
+    # MAIN ENTRY
     def process_and_rank(
         self,
         points: List[Dict[str, Any]],
         retrieval_scores: Optional[Dict[str, float]] = None
     ) -> List[FinalKeyPoint]:
 
-        logger.info(f"PostProcessor: processing {len(points)} points (final_k={self.final_k})")
+        logger.info(f"PostProcessor: processing {len(points)} points.")
 
         if not points:
             return []
 
-        # Merge retrieval scores (if provided)
+        # 1. Merge retrieval scores
         if retrieval_scores:
             points = self._merge_retrieval_scores(points, retrieval_scores)
 
-        # Compute combined scores
-        scored = [self._calculate_combined_score(p) for p in points]
+        # 2. Compute combined scores
+        points = [self._calculate_combined_score(p) for p in points]
 
-        # Deduplicate by summary text
-        deduped = self._deduplicate_points(scored, threshold=self.dedup_threshold)
+        # 3. Deduplicate summaries
+        points = self._dedupe(points)
 
-        # Select balanced top-k
-        selected = self._select_balanced_top_k(deduped, self.final_k)
+        # 4. Balanced selection (auto-fallback)
+        points = self._select_balanced(points, self.final_k)
 
-        # Assign final ranks and convert to FinalKeyPoint models
-        final_points = self._assign_final_ranks(selected)
+        # 5. Convert to FinalKeyPoint Pydantic models
+        final_list = self._assign_final_ranks(points)
 
-        logger.info(f"PostProcessor: selected {len(final_points)} final points")
-        return final_points
+        logger.info(f"PostProcessor: final selected = {len(final_list)}")
+        return final_list
 
-
+    # MERGE RETRIEVAL SCORES
     def _merge_retrieval_scores(self, points: List[Dict[str, Any]], scores: Dict[str, float]) -> List[Dict[str, Any]]:
-        """Attach retrieval_score to each point where possible using chunk_id or metadata.chunk_id."""
         for p in points:
-            chunk_id = p.get("chunk_id") or (p.get("metadata") or {}).get("chunk_id")
+            chunk_id = (
+                p.get("chunk_id") or
+                p.get("metadata", {}).get("chunk_id")
+            )
             if chunk_id and chunk_id in scores:
-                try:
-                    p["retrieval_score"] = float(scores[chunk_id])
-                except Exception:
-                    p["retrieval_score"] = p.get("retrieval_score", 0.0)
+                p["retrieval_score"] = float(scores[chunk_id])
             else:
                 p.setdefault("retrieval_score", 0.0)
         return points
 
-    def _calculate_combined_score(self, point: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Compute combined score from importance_score and retrieval_score.
-        """
-        importance = self._safe_float(point.get("importance_score"), default=0.5)
-        retrieval = self._safe_float(point.get("retrieval_score"), default=0.0)
+    # SCORE COMPUTATION
+    def _calculate_combined_score(self, p: Dict[str, Any]):
+        importance = self._safe_float(p.get("importance_score"), default=0.5)
+        retrieval = self._safe_float(p.get("retrieval_score"), default=0.0)
 
         combined = (importance * 0.7) + (retrieval * 0.3)
-        point["combined_score"] = round(float(combined), 4)
 
-        # Ensure importance_score present and clipped
-        point["importance_score"] = round(max(0.0, min(1.0, importance)), 4)
-        point["retrieval_score"] = round(max(0.0, min(1.0, retrieval)), 4)
+        p["importance_score"] = max(0.0, min(1.0, importance))
+        p["retrieval_score"] = max(0.0, min(1.0, retrieval))
+        p["combined_score"] = round(combined, 4)
 
-        return point
+        return p
 
-    def _deduplicate_points(self, points: List[Dict[str, Any]], threshold: float = 0.85) -> List[Dict[str, Any]]:
-        """
-        Remove duplicates based on summary similarity (rapidfuzz ratio).
-        Keeps the highest combined_score variant among duplicates.
-        """
+    # DEDUPLICATION
+    def _dedupe(self, points: List[Dict[str, Any]]):
         if len(points) <= 1:
             return points
 
-        # Sort by combined_score desc so keep best first
-        sorted_points = sorted(points, key=lambda x: x.get("combined_score", 0.0), reverse=True)
+        # sort by best score first
+        pts = sorted(points, key=lambda x: x["combined_score"], reverse=True)
 
-        unique = []
-        for p in sorted_points:
-            summary = str(p.get("summary", "")).strip()
+        kept = []
+        summaries = []
+
+        for p in pts:
+            summary = p.get("summary", "").strip().lower()
             if not summary:
-                # Treat empty summary as unique (will likely be filtered later)
-                unique.append(p)
+                kept.append(p)
                 continue
 
             is_dup = False
-            for u in unique:
-                # Compare with already accepted summaries
-                u_summary = str(u.get("summary", "")).strip()
-                if not u_summary:
-                    continue
-                try:
-                    sim = fuzz.ratio(summary.lower(), u_summary.lower()) / 100.0
-                except Exception:
-                    # On fuzz errors, be conservative
-                    sim = 0.0
-
-                if sim >= threshold:
+            for s in summaries:
+                sim = fuzz.ratio(summary, s) / 100.0
+                if sim >= self.dedup_threshold:
                     is_dup = True
                     break
 
             if not is_dup:
-                unique.append(p)
+                kept.append(p)
+                summaries.append(summary)
 
-        logger.info(f"Deduplicated {len(points)} -> {len(unique)} points")
-        return unique
+        logger.info(f"Deduplicated {len(points)} → {len(kept)}")
+        return kept
 
-    def _select_balanced_top_k(self, points: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
+    # BALANCED SELECTION
+    def _select_balanced(self, points: List[Dict[str, Any]], k: int):
         if len(points) <= k:
             return points
 
-        # Group by stance normalized to 'for', 'against', 'neutral'
-        groups = {"for": [], "against": [], "neutral": []}
+        # group by stance
+        groups = {
+            "for": [],
+            "against": [],
+            "neutral": [],
+            "amicus": []
+        }
 
         for p in points:
-            s = p.get("stance")
-            normalized = self._normalize_stance(s)
-            if normalized == "for":
-                groups["for"].append(p)
-            elif normalized == "against":
-                groups["against"].append(p)
-            else:
-                groups["neutral"].append(p)
+            s = self._norm_stance(p.get("stance"))
+            groups[s].append(p)
 
-        # Sort each group by combined_score desc
-        for key in groups:
-            groups[key].sort(key=lambda x: x.get("combined_score", 0.0), reverse=True)
+        # sort each by score
+        for g in groups.values():
+            g.sort(key=lambda x: x["combined_score"], reverse=True)
+
+        # If document is one-sided (e.g., all "against")
+        non_empty_groups = [g for g in groups.values() if g]
+        if len(non_empty_groups) == 1:
+            # return top-k from this single stance
+            return non_empty_groups[0][:k]
+
+        # Otherwise do balanced selection
+        half = k // 2
 
         selected = []
-        # Target per side (for vs against)
-        target_per_side = k // 2
+        selected.extend(groups["for"][:half])
+        selected.extend(groups["against"][:half])
 
-        selected.extend(groups["for"][:target_per_side])
-        selected.extend(groups["against"][:target_per_side])
+        remaining = k - len(selected)
+        pool = (
+            groups["for"][half:] +
+            groups["against"][half:] +
+            groups["amicus"] +
+            groups["neutral"]
+        )
+        pool.sort(key=lambda x: x["combined_score"], reverse=True)
+        selected.extend(pool[:remaining])
 
-        remaining_slots = k - len(selected)
-        if remaining_slots > 0:
-            # Build pool of remaining candidates
-            pool = []
-            pool.extend(groups["for"][target_per_side:])
-            pool.extend(groups["against"][target_per_side:])
-            pool.extend(groups["neutral"])
-
-            pool.sort(key=lambda x: x.get("combined_score", 0.0), reverse=True)
-            selected.extend(pool[:remaining_slots])
-
-        # Ensure not exceeding k
         return selected[:k]
 
-    def _assign_final_ranks(self, points: List[Dict[str, Any]]) -> List[FinalKeyPoint]:
-        """Sort final points by combined_score and convert to FinalKeyPoint Pydantic models with ranks."""
-        sorted_points = sorted(points, key=lambda x: x.get("combined_score", 0.0), reverse=True)
+    # FINAL RANK ASSIGNMENT
+    def _assign_final_ranks(self, points: List[Dict[str, Any]]):
+        out = []
+        sorted_pts = sorted(points, key=lambda x: x["combined_score"], reverse=True)
 
-        final = []
-        for rank, p in enumerate(sorted_points, start=1):
-            try:
-                # Normalize stance to Stance enum if possible
-                stance_val = p.get("stance")
-                try:
-                    # Accept either Stance enum or string
-                    if isinstance(stance_val, Stance):
-                        stance_enum = stance_val
-                    else:
-                        stance_enum = Stance(str(stance_val).lower())
-                except Exception:
-                    stance_enum = Stance.NEUTRAL
+        for rank, p in enumerate(sorted_pts, 1):
 
-                fk = FinalKeyPoint(
-                    summary=str(p.get("summary", "")).strip(),
-                    importance=p.get("importance"),
-                    importance_score=self._safe_float(p.get("importance_score"), default=0.5),
-                    stance=stance_enum,
-                    supporting_quote=p.get("supporting_quote"),
-                    legal_concepts=p.get("legal_concepts", []),
-                    page_start=self._safe_int(p.get("page_start")),
-                    page_end=self._safe_int(p.get("page_end")),
-                    line_start=self._safe_int(p.get("line_start")),
-                    line_end=self._safe_int(p.get("line_end")),
-                    category=p.get("category"),
-                    retrieval_score=self._safe_float(p.get("retrieval_score"), default=0.0),
-                    combined_score=self._safe_float(p.get("combined_score"), default=0.0),
-                    final_rank=rank
-                )
-                final.append(fk)
-            except Exception as e:
-                logger.error(f"Failed to build FinalKeyPoint for rank {rank}: {e}")
-                continue
+            stance_enum = self._convert_to_stance(p.get("stance"))
 
-        return final
+            final = FinalKeyPoint(
+                summary=p.get("summary", ""),
+                importance=p.get("importance"),
+                importance_score=p.get("importance_score", 0.5),
+                stance=stance_enum,
+                supporting_quote=p.get("supporting_quote"),
+                legal_concepts=p.get("legal_concepts", []),
+                page_start=self._safe_int(p.get("page_start")),
+                page_end=self._safe_int(p.get("page_end")),
+                line_start=self._safe_int(p.get("line_start")),
+                line_end=self._safe_int(p.get("line_end")),
+                category=p.get("category"),
+                retrieval_score=p.get("retrieval_score", 0.0),
+                combined_score=p.get("combined_score", 0.0),
+                final_rank=rank
+            )
+            out.append(final)
 
+        return out
 
-    def _normalize_stance(self, stance: Any) -> str:
-        """Normalize various possible stance representations to 'for'|'against'|'neutral'."""
-        if isinstance(stance, Stance):
-            sval = stance.value.lower()
+    # HELPERS
+    def _norm_stance(self, s: Any) -> str:
+        if isinstance(s, Stance):
+            sval = s.value.lower()
         else:
-            sval = str(stance or "").lower()
+            sval = str(s).lower().strip()
 
         if sval in ("plaintiff", "for"):
             return "for"
         if sval in ("defendant", "against"):
             return "against"
+        if sval == "amicus":
+            return "amicus"
         return "neutral"
 
-    def _safe_float(self, v: Any, default: float = 0.0) -> float:
+    def _convert_to_stance(self, s: Any) -> Stance:
+        try:
+            if isinstance(s, Stance):
+                return s
+            return Stance(str(s).lower())
+        except Exception:
+            return Stance.NEUTRAL
+
+    def _safe_float(self, v: Any, default=0.0):
         try:
             return float(v)
-        except Exception:
+        except:
             return float(default)
 
-    def _safe_int(self, v: Any) -> Optional[int]:
+    def _safe_int(self, v: Any):
         try:
-            if v is None:
-                return None
-            return int(v)
-        except Exception:
+            return int(v) if v is not None else None
+        except:
             return None
-
