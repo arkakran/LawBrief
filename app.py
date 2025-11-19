@@ -14,7 +14,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# Custom CSS (kept as you had it)
+# Custom CSS
 st.markdown("""
 <style>
 .main-header {
@@ -80,7 +80,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar controls
+# Sidebar Controls
 with st.sidebar:
     st.header("⚙️ Settings")
 
@@ -92,12 +92,12 @@ with st.sidebar:
     st.info("""
     **How it works:**
     1. Upload a PDF  
-    2. Extracts text with metadata  
+    2. Extracts text + metadata  
     3. Embeds → retrieves → LLM analyzes  
     4. Outputs key arguments with citations  
     """)
 
-# Input area
+# Input Area
 col_left, col_right = st.columns([2, 1])
 
 with col_left:
@@ -106,7 +106,7 @@ with col_left:
 with col_right:
     query = st.text_input("🔍 Search Query", value="key legal arguments for and against")
 
-# Progress display
+# Progress Display
 progress_bar = st.progress(0)
 progress_text = st.empty()
 
@@ -114,36 +114,42 @@ def progress_callback(stage: str, percent: int):
     progress_bar.progress(percent)
     progress_text.text(f"Stage: {stage} ({percent}%)")
 
-# Helper - normalize stance values to readable strings
-def normalize_stance(raw) -> str:
+# Normalizing stance for final display
+def normalize_stance(raw):
+    """Accepts enum, string, or broken value → returns final stance."""
     if raw is None:
         return "neutral"
-    # If pydantic enum instance:
-    try:
-        val = raw.value if hasattr(raw, "value") else str(raw)
-    except Exception:
-        val = str(raw)
-    val = str(val).strip().lower()
 
-    # If form "stance.neutral" or "stance.NEUTRAL", split by dot
+    # If enum
+    try:
+        if hasattr(raw, "value"):
+            raw = raw.value
+    except:
+        pass
+
+    val = str(raw).strip().lower()
+
+    # Fix weird values like "stance.for"
     if "." in val:
         val = val.split(".")[-1]
 
-    # map synonyms
     mapping = {
         "for": "for",
-        "against": "against",
         "plaintiff": "plaintiff",
         "defendant": "defendant",
+        "against": "against",
         "amicus": "amicus",
         "neutral": "neutral",
         "unknown": "neutral"
     }
-    return mapping.get(val, val)
 
+    return mapping.get(val, "neutral")
+
+# Card Renderer
 def render_card(point: dict):
-    stance_key = normalize_stance(point.get("stance", "neutral"))
+    stance_key = normalize_stance(point.get("stance"))
     stance_display = stance_key.upper()
+
     stance_color = {
         "plaintiff": "plaintiff",
         "for": "plaintiff",
@@ -153,41 +159,44 @@ def render_card(point: dict):
         "neutral": "neutral"
     }.get(stance_key, "neutral")
 
-    # Build tag badges
+    # concepts
     concepts = point.get("legal_concepts", []) or []
     concept_badges = "".join(
-        f"<span class='stance-badge' style='background:#e8eaf6;color:#3f51b5;margin-right:0.4rem'>{st}</span>"
-        for st in concepts
+        f"<span class='stance-badge' style='background:#e8eaf6;color:#3f51b5'>{c}</span>"
+        for c in concepts
     )
 
-    score_pct = int(round(point.get("importance_score", 0) * 100))
+    score_pct = int(round(point.get("importance_score", 0.0) * 100))
     summary = point.get("summary", "")
     quote = point.get("supporting_quote", "")
     citation = point.get("citation", "No citation")
     rank = point.get("final_rank", "?")
 
-    # Build the HTML - no leading indentation (very important)
-    html = (
-f"<div class='point-card'>"
-f"  <div style='display:flex; align-items:flex-start;'>"
-f"    <div class='rank-badge'>{rank}</div>"
-f"    <div style='flex:1;'>"
-f"      <div style='margin-bottom:0.6rem'>"
-f"        <span class='stance-badge {stance_color}' style='margin-right:0.6rem'>{stance_display}</span>"
-f"        <span class='stance-badge' style='background:#eef; color:#114;'>Score: {score_pct}%</span>"
-f"      </div>"
-f"      <p style='font-size:1.05rem; color:#222; margin-top:0.2rem'>{summary}</p>"
-f"      <div class='quote-box'>\"{quote}\"</div>"
-f"      <p><strong>📍 Citation:</strong> {citation}</p>"
-f"      <p style='margin-top:0.5rem'>{concept_badges}</p>"
-f"    </div>"
-f"  </div>"
-f"</div>"
-    )
+    html = f"""
+    <div class='point-card'>
+      <div style='display:flex; align-items:flex-start;'>
+        <div class='rank-badge'>{rank}</div>
+        <div style='flex:1;'>
+          <div style='margin-bottom:0.6rem'>
+            <span class='stance-badge {stance_color}'>{stance_display}</span>
+            <span class='stance-badge' style='background:#eef;color:#114;'>Score: {score_pct}%</span>
+          </div>
+
+          <p style='font-size:1.05rem;color:#222'>{summary}</p>
+
+          <div class='quote-box'>" {quote} "</div>
+
+          <p><strong>📍 Citation:</strong> {citation}</p>
+
+          <p style='margin-top:0.5rem'>{concept_badges}</p>
+        </div>
+      </div>
+    </div>
+    """
 
     components.html(html, height=260, scrolling=True)
 
-# Main analyze action
+# Main Action
 if uploaded_file:
     if st.button("🚀 Analyze Document", type="primary", use_container_width=True):
         temp_dir = Path("temp_uploads")
@@ -207,19 +216,22 @@ if uploaded_file:
             progress_callback("starting", 1)
             t0 = time.time()
 
-            # NOTE: pipeline.analyze in your code previously accepted only (pdf_path, query).
-            # Many of your earlier edits passed progress_callback — keeping the call compatible:
+            # Call Pipeline
             try:
-                result = pipeline.analyze(pdf_path=str(file_path), query=query, progress_callback=progress_callback)
+                result = pipeline.analyze(
+                    pdf_path=str(file_path),
+                    query=query,
+                    progress_callback=progress_callback
+                )
             except TypeError:
-                # fallback if pipeline.analyze doesn't accept progress_callback
+                # If pipeline doesn't support progress callback
                 result = pipeline.analyze(pdf_path=str(file_path), query=query)
 
             elapsed = time.time() - t0
             progress_callback("done", 100)
             time.sleep(0.25)
 
-            # clean up
+            # Cleanup
             file_path.unlink(missing_ok=True)
 
             st.success(f"Analysis completed in {elapsed:.1f}s")
@@ -231,29 +243,31 @@ if uploaded_file:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Pages", meta.get("total_pages", "N/A"))
             c2.metric("Key Points", len(key_points))
-            c3.metric("Confidence", f"{int(result.get('confidence',0)*100)}%")
+            c3.metric("Confidence", f"{int(result.get('confidence', 0)*100)}%")
             c4.metric("Processing Time", f"{elapsed:.1f}s")
 
             st.markdown("---")
 
-            # Document info
+            # Document Info
             if meta.get("case_name"):
                 st.subheader("📋 Document Details")
                 m1, m2, m3 = st.columns(3)
                 m1.write(f"**Case Name:** {meta.get('case_name')}")
-                m2.write(f"**Type:** {meta.get('document_type','N/A')}")
-                m3.write(f"**Court:** {meta.get('court','N/A')}")
+                m2.write(f"**Type:** {meta.get('document_type', 'N/A')}")
+                m3.write(f"**Court:** {meta.get('court', 'N/A')}")
                 st.markdown("---")
 
-            # Key points section
+            # Key Points Section
             st.subheader("🔑 Key Legal Arguments")
             if not key_points:
                 st.info("No key points extracted.")
+
             for p in key_points:
                 render_card(p)
 
         except Exception as e:
             st.error("❌ Analysis failed.")
             st.code(traceback.format_exc())
+
 else:
     st.info("👆 Upload a PDF to begin")
