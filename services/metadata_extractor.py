@@ -126,7 +126,7 @@ class MetadataExtractor:
           "argument_type": "statutory | regulatory | constitutional | case_law | procedural | policy | other"
         }}
 
-        ⭐STANCE CLASSIFICATION RULE:
+        STANCE CLASSIFICATION RULE:
         - If text *supports/justifies* something → stance="for"
         - If text *criticizes/challenges/opposes* → stance="against"
         - If it's from plaintiff/defendant perspective → use that label
@@ -188,21 +188,21 @@ class MetadataExtractor:
         except Exception:
             out["stance"] = Stance.NEUTRAL
 
-        # -------- importance_score --------
+        #Importance_score
         try:
             sc = float(md.get("importance_score", 0.5))
             out["importance_score"] = max(0.0, min(1.0, sc))
         except Exception:
             out["importance_score"] = 0.5
 
-        # -------- legal concepts --------
+        #Legal concepts
         concepts = md.get("legal_concepts", [])
         if isinstance(concepts, list):
             out["legal_concepts"] = [str(c).strip() for c in concepts if c]
         else:
             out["legal_concepts"] = [c.strip() for c in str(concepts).split(",") if c.strip()]
 
-        # -------- argument type --------
+        #Argument type
         arg_raw = str(md.get("argument_type", "other")).lower()
         try:
             out["argument_type"] = ArgumentCategory(arg_raw)
@@ -210,3 +210,4 @@ class MetadataExtractor:
             out["argument_type"] = ArgumentCategory.OTHER
 
         return out
+
