@@ -134,7 +134,7 @@ class LLMAnalyzer:
 
         Extract EXACTLY 12–15 key legal arguments from the text.
 
-        ⭐ FOR EACH ARGUMENT YOU MUST OUTPUT:
+        FOR EACH ARGUMENT YOU MUST OUTPUT:
         - summary
         - importance_score (0.0–1.0 float)
         - supporting_quote
@@ -142,7 +142,7 @@ class LLMAnalyzer:
         - page_start, page_end
         - stance = "for" | "against" | "neutral" | "plaintiff" | "defendant" | "amicus"
 
-        ⭐ STANCE RULES:
+        STANCE RULES:
         - If the argument SUPPORTS an action/position → stance="for"
         - If it OPPOSES or CRITICIZES → stance="against"
         - If neither clear → stance="neutral"
@@ -266,3 +266,4 @@ class LLMAnalyzer:
                 best = ch
 
         return best if best_score >= 80 else None
+
