@@ -38,7 +38,7 @@ All chunks → embedding → FAISS index for fast semantic search.
 User query → embedding → retrieve most relevant chunks via semantic similarity.
 
 ### 5️⃣ Argument Extraction (LLM)  
-LLM pulls 12–15 arguments with:
+LLM pulls arguments with:
 - summary  
 - stance  
 - supporting quote  
