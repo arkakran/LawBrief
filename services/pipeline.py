@@ -34,107 +34,89 @@ class AnalysisPipeline:
         self.post_processor = post_processor or PostProcessor(final_k=self.final_k)
 
 
-    def analyze(
-        self,
-        pdf_path: str,
-        query: str,
-        progress_callback: Optional[Callable[[str, int], None]] = None
-    ) -> Dict[str, Any]:
-
+    def analyze(self, pdf_path: str, query: str, progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
         start_time = time.time()
 
-        def _report(stage: str, pct: int):
+        def _step(stage: str, pct: int):
             if progress_callback:
-                try: progress_callback(stage, int(pct))
+                try: progress_callback(stage, pct)
                 except: pass
 
-        logger.info(f"Starting analysis pipeline for {pdf_path}")
-        _report("start", 1)
+        logger.info(f"Pipeline started for {pdf_path}")
+        _step("start", 1)
 
-        # PDF → chunks
-        _report("processing_pdf", 5)
+        # 1. PDF → text chunks
         chunks, doc_metadata, doc_id = self.pdf_processor.process_pdf(pdf_path)
-        _report("processing_pdf", 20)
+        _step("pdf_processing", 20)
 
-        # Doc-level metadata
+        # 2. Document-level metadata (LLM)
         sample = self.pdf_processor.get_sample_text(pdf_path)
         try:
             llm_meta = self.metadata_extractor.extract_document_metadata(sample)
             doc_metadata.update(llm_meta)
         except Exception as e:
-            logger.warning(f"Document metadata failed: {e}")
-        _report("doc_metadata", 30)
+            logger.warning(f"Document-level metadata failed: {e}")
+        _step("doc_metadata", 30)
 
-        # Chunk-level metadata 
+        # 3. Chunk-level metadata (LLM batch)
         try:
             enriched_chunks = self.metadata_extractor.extract_chunk_metadata_batch(chunks)
-        except Exception as e:
-            logger.warning(f"Chunk metadata failed: {e}")
-            enriched_chunks = chunks
-        _report("chunk_metadata", 45)
-
-        # Vector index 
-        try:
-            self.vector_store.create_index(enriched_chunks)
-        except Exception as e:
-            logger.error(f"Index creation failed: {e}")
-            raise
-
-        _report("indexing", 55)
-
-        # Query variations
-        try:
-            query_variations = self.llm_analyzer.generate_query_variations(query)
         except:
-            query_variations = [query]
+            enriched_chunks = chunks
+        _step("chunk_metadata", 45)
 
-        _report("retrieval", 65)
+        # 4. Create vector index
+        self.vector_store.create_index(enriched_chunks)
+        _step("indexing", 55)
 
-        # Retrieval across variations
+        # 5. Generate query variations
         try:
-            top_k_per_query = max(1, self.top_k_retrieval // len(query_variations))
-            retrieved_chunks = self.vector_store.search_multiple_queries(
-                queries=query_variations,
-                top_k_per_query=top_k_per_query
+            variations = self.llm_analyzer.generate_query_variations(query)
+        except:
+            variations = [query]
+        _step("retrieval", 65)
+
+        # 6. Retrieve relevant chunks
+        try:
+            top_per_query = max(1, self.top_k_retrieval // len(variations))
+            retrieved = self.vector_store.search_multiple_queries(
+                queries=variations,
+                top_k_per_query=top_per_query
             )
-        except Exception as e:
-            logger.error(f"Retrieval failed: {e}")
-            retrieved_chunks = []
+        except:
+            retrieved = []
+        _step("retrieval", 75)
 
-        _report("retrieval", 75)
-
-        #LLM extraction 
-        analysis_output = self.llm_analyzer.analyze_chunks(retrieved_chunks, query)
+        # 7. Extract arguments with LLM
+        analysis_output = self.llm_analyzer.analyze_chunks(retrieved, query)
         if not analysis_output.extracted_points:
-            logger.warning("LLM returned no extracted points.")
             return self._empty_response(doc_metadata, doc_id, query, enriched_chunks, start_time)
+        _step("analysis", 85)
 
-        _report("analysis", 85)
-
-        #Refinement 
-        original_points = [p.dict() for p in analysis_output.extracted_points]
+        # 8. Refinement
+        original = [p.dict() for p in analysis_output.extracted_points]
 
         try:
-            refined_raw = self.llm_analyzer.refine_extraction(original_points, query)
-        except Exception as e:
-            logger.error(f"Refinement failed: {e}")
-            refined_raw = original_points
+            refined_raw = self.llm_analyzer.refine_extraction(original, query)
+        except:
+            refined_raw = original
 
-        refined_points = []
-        for orig, ref in zip(original_points, refined_raw):
-            merged = orig.copy()
+        refined = []
+        for o, r in zip(original, refined_raw):
+            merged = o.copy()
             merged.update({
-                "summary": ref.get("summary", orig.get("summary")),
-                "supporting_quote": ref.get("supporting_quote", orig.get("supporting_quote")),
-                "legal_concepts": ref.get("legal_concepts", orig.get("legal_concepts")),
-                "importance_score": ref.get("importance_score", orig.get("importance_score"))
+                "summary": r.get("summary", o["summary"]),
+                "supporting_quote": r.get("supporting_quote", o["supporting_quote"]),
+                "legal_concepts": r.get("legal_concepts", o["legal_concepts"]),
+                "importance_score": r.get("importance_score", o["importance_score"])
             })
-            refined_points.append(merged)
+            refined.append(merged)
 
-        _report("refinement", 92)
+        _step("refinement", 92)
 
+        # 9. Collect retrieval scores
         retrieval_scores = {}
-        for ch in retrieved_chunks:
+        for ch in retrieved:
             cid = ch.get("metadata", {}).get("chunk_id")
             if cid:
                 retrieval_scores[cid] = max(
@@ -142,26 +124,23 @@ class AnalysisPipeline:
                     float(ch.get("score", 0.0))
                 )
 
-        try:
-            final_models = self.post_processor.process_and_rank(refined_points, retrieval_scores)
-        except Exception as e:
-            logger.error(f"Post-processing failed: {e}")
-            final_models = []
+        # 10. Ranking & deduplication
+        final_models = self.post_processor.process_and_rank(refined, retrieval_scores)
+        _step("post_processing", 97)
 
-        _report("post_processing", 97)
-
+        # 11. Build final display data
         key_points = []
         for p in final_models:
-            d = p.dict()
-            d["citation"] = format_page_citation(
-                d.get("page_start"), d.get("page_end"),
-                d.get("line_start"), d.get("line_end")
+            data = p.dict()
+            data["citation"] = format_page_citation(
+                data.get("page_start"),
+                data.get("page_end"),
+                data.get("line_start"),
+                data.get("line_end")
             )
-            key_points.append(d)
+            key_points.append(data)
 
-        # Confidence score
-        all_scores = [c.get("score", 0.0) for c in retrieved_chunks]
-        confidence = self._calculate_confidence(final_models, all_scores)
+        confidence = self._calculate_confidence(final_models, [c.get("score", 0) for c in retrieved])
 
         result = {
             "document_metadata": doc_metadata,
@@ -173,11 +152,11 @@ class AnalysisPipeline:
             "timings": {"elapsed_seconds": round(time.time() - start_time, 2)}
         }
 
-        _report("done", 100)
+        _step("done", 100)
         return result
 
 
-    def _empty_response(self, doc_metadata, doc_id, query, chunks, start):
+    def _empty_response(self, doc_metadata, doc_id, query, chunks, start_time):
         return {
             "document_metadata": doc_metadata,
             "document_id": doc_id,
@@ -185,19 +164,12 @@ class AnalysisPipeline:
             "total_chunks": len(chunks),
             "key_points": [],
             "confidence": 0.0,
-            "timings": {"elapsed_seconds": round(time.time() - start, 2)}
+            "timings": {"elapsed_seconds": round(time.time() - start_time, 2)}
         }
-
 
     def _calculate_confidence(self, points, retrieval_scores):
         if not points:
             return 0.0
-
-        importance_avg = sum([float(p.importance_score) for p in points]) / len(points)
-        retrieval_avg = 0.0
-        if retrieval_scores:
-            top = sorted(retrieval_scores, reverse=True)[:10]
-            retrieval_avg = sum(top) / len(top)
-
-        conf = (importance_avg * 0.6) + (retrieval_avg * 0.4)
-        return round(max(0.0, min(1.0, conf)), 2)
+        importance_avg = sum(p.importance_score for p in points) / len(points)
+        retrieval_avg = sum(sorted(retrieval_scores, reverse=True)[:10]) / max(1, len(retrieval_scores))
+        return round(min(1.0, max(0.0, importance_avg * 0.6 + retrieval_avg * 0.4)), 2)
