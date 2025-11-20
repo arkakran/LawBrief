@@ -2,11 +2,6 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from enum import Enum
 
-
-# -------------------------
-# ENUMS
-# -------------------------
-
 class DocumentType(str, Enum):
     BRIEF = "brief"
     MOTION = "motion"
@@ -14,7 +9,6 @@ class DocumentType(str, Enum):
     PLEADING = "pleading"
     AMICUS_BRIEF = "amicus_brief"
     OTHER = "other"
-
 
 class Stance(str, Enum):
     PLAINTIFF = "plaintiff"
@@ -25,7 +19,6 @@ class Stance(str, Enum):
     NEUTRAL = "neutral"
     UNKNOWN = "unknown"
 
-
 class ArgumentCategory(str, Enum):
     STATUTORY = "statutory"
     REGULATORY = "regulatory"
@@ -34,11 +27,6 @@ class ArgumentCategory(str, Enum):
     PROCEDURAL = "procedural"
     POLICY = "policy"
     OTHER = "other"
-
-
-# -------------------------
-# MODELS
-# -------------------------
 
 class ExtractedPoint(BaseModel):
     summary: str = Field(..., min_length=5)
@@ -68,3 +56,4 @@ class FinalKeyPoint(ExtractedPoint):
 class LLMAnalysisOutput(BaseModel):
     extracted_points: List[ExtractedPoint]
     confidence: float = Field(..., ge=0.0, le=1.0)
+
